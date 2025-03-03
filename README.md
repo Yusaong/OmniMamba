@@ -20,7 +20,7 @@ import torch
 import mamba_ssm
 ```
 
-![network](https://github.com/Yusaong/OmniMamba/assets/network_architecture.png)
+![network](https://github.com/Yusaong/OmniMamba/tree/main/assets/network_architecture.png)
 
 
 ## Model Training
