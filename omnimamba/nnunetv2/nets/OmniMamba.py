@@ -45,6 +45,7 @@ class WBFE(nn.Module):
         x_spa = x * self.spatial_attention(torch.concat([x_low, x_high], 1))
         return x + x_spa
 
+
 class OAF(nn.Module):
     def __init__(self, in_channels, perspectives):
         super(OAF, self).__init__()
@@ -72,6 +73,7 @@ class OAF(nn.Module):
 
         return output
 
+
 class MambaBlock(nn.Module):
     def __init__(self, channels):
         super(MambaBlock, self).__init__()
@@ -90,6 +92,7 @@ class MambaBlock(nn.Module):
         x = self.head(self.norm2(x)) + x
         return x
 
+
 class BiMamba(nn.Module):
     def __init__(self, channels):
         super(BiMamba, self).__init__()
@@ -101,6 +104,7 @@ class BiMamba(nn.Module):
         fwd = self.fwd_mamba(x)
         bwd = self.bwd_mamba(x.flip(dims=(1,))).flip(dims=(1,))
         return self.norm(fwd + bwd)
+
 
 class OAA(nn.Module):
     def __init__(self, channels):
@@ -134,16 +138,18 @@ class OAA(nn.Module):
 
         return self.OAF(outputs)
 
+
 class WaveletPreprocessor:
-    def __init__(self, wavelet_type='db2'):
+    def __init__(self, num_stages, wavelet_type='db2'):
         self.wavelet_type = wavelet_type
+        self.num_stages = num_stages
 
     def normalize(self, data):
         return (data - data.min()) / (data.max() - data.min()) * 255
 
     def process_batch(self, image_batch):
         B, C, H, W, D = image_batch.shape
-        scales = [1, 2, 4, 8]
+        scales = [2 ** i for i in range(self.num_stages)]
         low_frequency_list, high_frequency_list = [], []
 
         low_frequency_batches = {
@@ -174,7 +180,8 @@ class WaveletPreprocessor:
         high_frequency_list = [high_frequency_batches[scale] for scale in scales]
 
         return low_frequency_list, high_frequency_list
-    
+
+
 class UpsampleLayer(nn.Module):
     def __init__(
             self,
@@ -193,6 +200,7 @@ class UpsampleLayer(nn.Module):
         x = F.interpolate(x, scale_factor=self.pool_op_kernel_size, mode=self.mode)
         x = self.conv(x)
         return x
+
 
 class BasicResBlock(nn.Module):
     def __init__(
@@ -232,6 +240,7 @@ class BasicResBlock(nn.Module):
             x = self.conv3(x)
         y += x
         return self.act2(y)
+
 
 class UNetResEncoder(nn.Module):
     def __init__(self,
@@ -383,6 +392,7 @@ class UNetResEncoder(nn.Module):
 
         return output
 
+
 class UNetResDecoder(nn.Module):
     def __init__(self,
                  encoder,
@@ -491,6 +501,7 @@ class UNetResDecoder(nn.Module):
                 output += np.prod([self.num_classes, *skip_sizes[-(s + 1)]], dtype=np.int64)
         return output
 
+
 class OmniMamba(nn.Module):
     def __init__(self,
                  input_channels: int,
@@ -550,21 +561,22 @@ class OmniMamba(nn.Module):
         )
 
         self.mamba_layer = OAA(channels=features_per_stage[-1])
-        self.wavelet_processor = WaveletPreprocessor()
+        self.wavelet_processor = WaveletPreprocessor(n_stages-1)
         self.decoder = UNetResDecoder(self.encoder, num_classes, n_conv_per_stage_decoder, deep_supervision)
-        self.att0 = WBFE(features_per_stage[0])
-        self.att1 = WBFE(features_per_stage[1])
-        self.att2 = WBFE(features_per_stage[2])
-        self.att3 = WBFE(features_per_stage[3])
+        self.wbfe_layers = nn.ModuleList([
+            WBFE(channels=ch) for ch in features_per_stage[:-1]
+        ])
 
     def forward(self, x):
         skips = self.encoder(x)
         x_low, x_high = self.wavelet_processor.process_batch(x)
-        skips[0] = self.att0(skips[0], x_low[0], x_high[0])
-        skips[1] = self.att1(skips[1], x_low[1], x_high[1])
-        skips[2] = self.att2(skips[2], x_low[2], x_high[2])
-        skips[3] = self.att3(skips[3], x_low[3], x_high[3])
-        skips[4] = self.mamba_layer(skips[4])
+        for i in range(len(self.wbfe_layers)):
+            skips[i] = self.wbfe_layers[i](
+                skips[i],
+                x_low[i],
+                x_high[i]
+            )
+        skips[-1] = self.mamba_layer(skips[-1])
         return self.decoder(skips)
 
     def compute_conv_feature_map_size(self, input_size):
@@ -574,6 +586,7 @@ class OmniMamba(nn.Module):
                                    "Give input_size=(x, y(, z))!"
         return self.encoder.compute_conv_feature_map_size(input_size) + self.decoder.compute_conv_feature_map_size(
             input_size)
+
 
 def get_omnimamba_from_plans(
         plans_manager: PlansManager,
